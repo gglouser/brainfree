@@ -3,7 +3,7 @@ module BrainFree where
 
 import Control.Applicative
 import Control.Monad.Free
--- import Control.Monad.Free.Church (fromF, improve)
+import Control.Monad.Free.Church (fromF)
 import Data.Bifunctor
 import qualified Text.Parsec as P
 import Runtime (Cell, coerce)
@@ -60,9 +60,9 @@ parseBF :: P.Parsec String () (BF ())
 parseBF = parse' <* P.eof
 
 parse' :: P.Parsec String () (BF ())
-parse' = sequence_ <$> P.many parse1
--- parse' = improve . sequence_ <$> P.many parse1
--- parse' = fromF . sequence_ <$> P.many parse1
+-- parse' = sequence_ <$> many parse1
+-- parse' = improve . sequence_ <$> many parse1
+parse' = fromF . sequence_ <$> many parse1
 
 parse1 :: MonadFree BFF m => P.Parsec String () (m ())
 parse1 = '<' ~> movePtr (-1)
