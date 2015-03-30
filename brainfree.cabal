@@ -2,10 +2,10 @@ name:                brainfree
 version:             0.1.0.0
 synopsis:            Brainfuck for free
 description:
-    An interpreter for brainfuck (http://http://en.wikipedia.org/wiki/Brainfuck)
-    using a free monad. Demonstrates multiple implementations of the underlying
-    data array (an infinite stream-based tape, a mutable vector, and a foreign
-    array) and a simple optimizer that runs at the free monad level.
+    An interpreter for brainfuck using a free monad. Demonstrates multiple
+    implementations of the underlying data array (an infinite stream-based
+    tape, a mutable vector, and a foreign array) and a simple optimizer that
+    runs at the free monad level.
 license:             MIT
 license-file:        LICENSE
 author:              Grant Glouser
@@ -15,9 +15,14 @@ build-type:          Simple
 extra-source-files:  README.md
 cabal-version:       >=1.10
 
+source-repository head
+    type:           git
+    location:       https://github.com/gglouser/brainfree.git
+
 executable brainfree
   main-is:              Main.hs
   other-extensions:     DeriveFunctor, FlexibleContexts
+  ghc-options:          -O2 -Wall
   build-depends:
     base >=4.7 && <4.8,
     transformers >=0.4 && <0.5,
