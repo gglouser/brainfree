@@ -1,0 +1,30 @@
+name:                brainfree
+version:             0.1.0.0
+synopsis:            Brainfuck for free
+description:
+    An interpreter for brainfuck (http://http://en.wikipedia.org/wiki/Brainfuck)
+    using a free monad. Demonstrates multiple implementations of the underlying
+    data array (an infinite stream-based tape, a mutable vector, and a foreign
+    array) and a simple optimizer that runs at the free monad level.
+license:             MIT
+license-file:        LICENSE
+author:              Grant Glouser
+maintainer:          gglouser@gmail.com
+category:            Language
+build-type:          Simple
+extra-source-files:  README.md
+cabal-version:       >=1.10
+
+executable brainfree
+  main-is:              Main.hs
+  other-extensions:     DeriveFunctor, FlexibleContexts
+  build-depends:
+    base >=4.7 && <4.8,
+    transformers >=0.4 && <0.5,
+    vector >=0.10 && <0.11,
+    mtl >=2.2 && <2.3,
+    free >=4.11 && <4.12,
+    bifunctors >=4.1 && <4.2,
+    parsec >=3.1 && <3.2
+  hs-source-dirs:       src
+  default-language:     Haskell2010
