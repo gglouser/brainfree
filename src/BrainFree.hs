@@ -1,5 +1,20 @@
 {-# LANGUAGE DeriveFunctor, FlexibleContexts #-}
-module BrainFree where
+{-|
+A free monad representing an abstract brainfuck machine.
+-}
+module BrainFree (
+  -- * BF monad
+  BF, BFF(..)
+  , movePtr, readPtr, writePtr, addPtr, getChr, putChr, loop
+  , input, output
+  , runBF, runBFM
+  -- * Parsing
+  , parseString, parseFile
+  -- * Optimizer
+  , optimize
+  -- * Utilities
+  , dumpBF
+  ) where
 
 import Control.Applicative
 import Control.Monad.Free
@@ -8,49 +23,68 @@ import Data.Bifunctor
 import qualified Text.Parsec as P
 import Runtime (Cell, coerce)
 
+-- | Alias for the free monad on 'BFF' actions.
 type BF = Free BFF
 
-data BFF k = MovePtr !Int k
-           | ReadPtr (Cell -> k)
-           | WritePtr !Cell k
-           | AddPtr !Cell k                 -- allows more optimizations
-           | GetChar (Maybe Char -> k)      -- Nothing indicates end-of-file
-           | PutChar !Char k
-           | Loop (BF ()) k
+-- | A functor representing abstract brainfuck machine actions.
+data BFF k = MovePtr !Int k                 -- ^ Move the data pointer the specified amount.
+           | ReadPtr (Cell -> k)            -- ^ Read the current cell at the data pointer.
+           | WritePtr !Cell k               -- ^ Write the given value to the current cell at the data pointer.
+           | AddPtr !Cell k                 -- ^ Add the given value to the current cell at the data pointer.
+                                            --   (Redundant given 'ReadPtr' / 'WritePtr', but allows more optimizations.)
+           | GetChar (Maybe Char -> k)      -- ^ Accept an input character. @Nothing@ indicates end-of-file.
+           | PutChar !Char k                -- ^ Send an output character.
+           | Loop (BF ()) k                 -- ^ Execute a loop using the given program fragment as the loop body.
     deriving Functor
 
+-- | Lifted 'MovePtr'.
 movePtr :: MonadFree BFF m => Int -> m ()
 movePtr n = liftF (MovePtr n ())
 
+-- | Lifted 'ReadPtr'.
 readPtr :: MonadFree BFF m => m Cell
 readPtr = liftF (ReadPtr id)
 
+-- | Lifted 'WritePtr'.
 writePtr :: MonadFree BFF m => Cell -> m ()
 writePtr c = liftF (WritePtr c ())
 
+-- | Lifted 'AddPtr'.
 addPtr :: MonadFree BFF m => Cell -> m ()
 addPtr n = liftF (AddPtr n ())
--- addPtr n = readPtr >>= writePtr . (+ n)
 
+-- | Lifted 'GetChar'.
 getChr :: MonadFree BFF m => m (Maybe Char)
 getChr = liftF (GetChar id)
 
+-- | Lifted 'PutChar'.
 putChr :: MonadFree BFF m => Char -> m ()
 putChr c = liftF (PutChar c ())
 
+-- | Lifted 'Loop'.
 loop :: MonadFree BFF m => BF () -> m ()
 loop body = liftF (Loop body ())
 
--- do nothing on EOF
-getCell :: MonadFree BFF m => m ()
-getCell = getChr >>= maybe (return ()) (writePtr . coerce)
+-- | The standard brainfuck input action ("@,@").
+--
+-- The default behavior is to leave the current cell value unchagned.
+-- A free monad interpreter for 'BFF' actions can implement one of the
+-- other standard behaviors by returning (the equivalent of) @Just 0@
+-- or @Just (-1)@ instead of @Nothing@ when end-of-file is reached.
+input :: MonadFree BFF m => m ()
+input = getChr >>= maybe (return ()) (writePtr . coerce)
 
-putCell :: MonadFree BFF m => m ()
-putCell = readPtr >>= putChr . coerce
+-- | The standard brainfuck output action ("@.@").
+output :: MonadFree BFF m => m ()
+output = readPtr >>= putChr . coerce
 
+-- | Tear down a 'BF' program using the given function to handle 'BFF' actions
+-- ('iter' specialized to 'BFF').
 runBF :: (BFF a -> a) -> BF a -> a
 runBF = iter
 
+-- | Tear down a 'BF' program in a 'Monad' using the given function to handle
+-- 'BFF' actions ('iterM' specialized to 'BFF').
 runBFM :: Monad m => (BFF (m a) -> m a) -> BF a -> m a
 runBFM = iterM
 
@@ -69,15 +103,19 @@ parse1 = '<' ~> movePtr (-1)
      <|> '>' ~> movePtr 1
      <|> '-' ~> addPtr (-1)
      <|> '+' ~> addPtr 1
-     <|> ',' ~> getCell
-     <|> '.' ~> putCell
+     <|> ',' ~> input
+     <|> '.' ~> output
      <|> loop <$> P.between (P.char '[') (P.char ']') parse'
      <|> return () <$ P.noneOf "]"
     where c ~> i = i <$ P.char c
 
+-- | Parse a string containing a brainfuck program and return either
+-- an error message or a @'BF' ()@ representing the program.
 parseString :: String -> Either String (BF ())
 parseString = first show . P.parse parseBF ""
 
+-- | Parse the contents of the named file as a brainfuck program and
+-- return either an error message or a @'BF' ()@ representing the program.
 parseFile :: FilePath -> IO (Either String (BF ()))
 parseFile filename = do
     src <- readFile filename
@@ -85,9 +123,17 @@ parseFile filename = do
 
 -----
 
+-- | Optimize a sequence of actions in the 'BF' monad.
+--
+-- * Combine data pointer moves ("@>@" and "@<@").
+-- * Combine data adds/subtracts ("@+@" and "@-@").
+-- * Simple loops "@[-]@" and "@[+]@" become @'WritePtr' 0@.
+-- * Cache the value of the current cell at the data pointer and use
+--   it to eliminate reads and defer writes.
 optimize :: BF a -> BF a
 optimize = optimize' (Just 0)
 
+-- 'optimize' worker that passes the cached cell value.
 optimize' :: Maybe Cell -> Free BFF a -> Free BFF a
 
 -- Combine moves
@@ -138,17 +184,19 @@ optimize' cc (Free bf) = Free (optimize' cc <$> bf)
 -- Write cell cache at end (end of program doesn't matter, but can also be end of loop body.)
 optimize' cc p@(Pure _) = spillCache cc p
 
-spillCache :: Maybe Cell -> Free BFF a -> Free BFF a
+-- If there is a value in the cell cache, write it out before continuing.
+spillCache :: Maybe Cell -> BF a -> BF a
 spillCache (Just c) k = Free (WritePtr c k)
 spillCache Nothing  k = k
 
 -----
 
+-- | Produce a string representing the given program.
 dumpBF :: BF () -> String
 dumpBF = runBF step . (>> return "")
     where
         step (MovePtr n k)  = "MovePtr " ++ show n ++ "; " ++ k
-        step (ReadPtr k)    = "ReadPtr; " ++ k 0
+        step (ReadPtr k)    = "ReadPtr; " ++ k 32
         step (WritePtr n k) = "WritePtr " ++ show n ++ "; " ++ k
         step (AddPtr n k)   = "AddPtr +" ++ show n ++ "; " ++ k
         step (GetChar k)    = "GetChar; " ++ k (Just 'A')

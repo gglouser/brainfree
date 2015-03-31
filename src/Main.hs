@@ -10,6 +10,7 @@ import Runtime
 defaultMemSize :: Int
 defaultMemSize = 30000
 
+-- | Run a 'BF' in 'IO' using a 'VectorMem' data store.
 runVecMem :: BF () -> IO ()
 runVecMem = withVectorMem defaultMemSize . evalStateT . runBFM step
     where
@@ -21,6 +22,7 @@ runVecMem = withVectorMem defaultMemSize . evalStateT . runBFM step
         step (PutChar c k)  = putc c >> k
         step (Loop body k)  = bfLoopM (get >>= vecRead) (runBFM step body) >> k
 
+-- | Run a 'BF' in 'IO' using a 'FPtrMem' data store.
 runFPtrMem :: BF () -> IO ()
 runFPtrMem = withFPtrMem defaultMemSize . evalStateT . runBFM step
     where
@@ -32,6 +34,12 @@ runFPtrMem = withFPtrMem defaultMemSize . evalStateT . runBFM step
         step (PutChar c k)  = putc c >> k
         step (Loop body k)  = bfLoopM (get >>= fptrRead) (runBFM step body) >> k
 
+-- | Run a 'BF' using an infinite 'Tape'.
+--
+-- To make it interesting, does not use any auxiliary monads, just
+-- pure functions @'Tape' -> 'String' -> 'String'@. The result (after passing
+-- in a 'blankTape') is an 'interact'-style @'String' -> 'String'@ function
+-- that takes a 'String' for input and produces a 'String' as output.
 runTape :: BF () -> String -> String
 runTape prog = runBF step (prog >> return finish) blankTape
     where
@@ -51,6 +59,10 @@ runTape prog = runBF step (prog >> return finish) blankTape
         finish :: Tape -> String -> String
         finish _ _ = ""
 
+-- | Use 'interact' to actually run the result of 'runTape' in 'IO'.
+--
+-- Note that 'interact' closes the stdin handle at the end, so this
+-- can't be used to run multiple programs in the same session.
 runTapeIO :: BF () -> IO ()
 runTapeIO = interact . runTape
 
