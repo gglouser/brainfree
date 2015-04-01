@@ -37,31 +37,24 @@ data BFF k = MovePtr !Int k                 -- ^ Move the data pointer the speci
            | Loop (BF ()) k                 -- ^ Execute a loop using the given program fragment as the loop body.
     deriving Functor
 
--- | Lifted 'MovePtr'.
 movePtr :: MonadFree BFF m => Int -> m ()
 movePtr n = liftF (MovePtr n ())
 
--- | Lifted 'ReadPtr'.
 readPtr :: MonadFree BFF m => m Cell
 readPtr = liftF (ReadPtr id)
 
--- | Lifted 'WritePtr'.
 writePtr :: MonadFree BFF m => Cell -> m ()
 writePtr c = liftF (WritePtr c ())
 
--- | Lifted 'AddPtr'.
 addPtr :: MonadFree BFF m => Cell -> m ()
 addPtr n = liftF (AddPtr n ())
 
--- | Lifted 'GetChar'.
 getChr :: MonadFree BFF m => m (Maybe Char)
 getChr = liftF (GetChar id)
 
--- | Lifted 'PutChar'.
 putChr :: MonadFree BFF m => Char -> m ()
 putChr c = liftF (PutChar c ())
 
--- | Lifted 'Loop'.
 loop :: MonadFree BFF m => BF () -> m ()
 loop body = liftF (Loop body ())
 
@@ -90,12 +83,10 @@ runBFM = iterM
 
 -----
 
-parseBF :: P.Parsec String () (BF ())
-parseBF = parse' <* P.eof
+parseBF :: String -> String -> Either String (BF ())
+parseBF filename = first show . P.parse (parse' <* P.eof) filename
 
 parse' :: P.Parsec String () (BF ())
--- parse' = sequence_ <$> many parse1
--- parse' = improve . sequence_ <$> many parse1
 parse' = fromF . sequence_ <$> many parse1
 
 parse1 :: MonadFree BFF m => P.Parsec String () (m ())
@@ -112,14 +103,12 @@ parse1 = '<' ~> movePtr (-1)
 -- | Parse a string containing a brainfuck program and return either
 -- an error message or a @'BF' ()@ representing the program.
 parseString :: String -> Either String (BF ())
-parseString = first show . P.parse parseBF ""
+parseString = parseBF ""
 
 -- | Parse the contents of the named file as a brainfuck program and
 -- return either an error message or a @'BF' ()@ representing the program.
 parseFile :: FilePath -> IO (Either String (BF ()))
-parseFile filename = do
-    src <- readFile filename
-    return . first show $ P.parse parseBF filename src
+parseFile filename = parseBF filename <$> readFile filename
 
 -----
 
