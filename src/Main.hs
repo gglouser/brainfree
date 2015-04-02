@@ -67,13 +67,17 @@ runTapeIO :: BF () -> IO ()
 runTapeIO = interact . runTape
 
 processArgs :: (BF () -> IO ()) -> Bool -> [String] -> IO ()
-processArgs _ _ [] = return ()
 processArgs _ o ("-v":args) = processArgs runVecMem o args
 processArgs _ o ("-f":args) = processArgs runFPtrMem o args
 processArgs _ o ("-t":args) = processArgs runTapeIO o args
 processArgs r _ ("-o":args) = processArgs r True args
+processArgs _ _ (('-':_):_) = usage
 processArgs runner o (filename:_) =
     parseFile filename >>= either print (if o then runner . optimize else runner)
+processArgs _ _ _ = usage
+
+usage :: IO ()
+usage = putStrLn "usage: brainfree [-v|-f|-t] [-o] FILENAME"
 
 main :: IO ()
 main = do
