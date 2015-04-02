@@ -120,10 +120,10 @@ parseFile filename = parseBF filename <$> readFile filename
 -- * Cache the value of the current cell at the data pointer and use
 --   it to eliminate reads and defer writes.
 optimize :: BF a -> BF a
-optimize = optimize' (Just 0)
+optimize = optimize' (Just (0, False))
 
--- 'optimize' worker that passes the cached cell value.
-optimize' :: Maybe Cell -> Free BFF a -> Free BFF a
+-- 'optimize' worker that passes the cached cell value and dirty flag.
+optimize' :: Maybe (Cell, Bool) -> Free BFF a -> Free BFF a
 
 -- Combine moves
 optimize' cc (Free (MovePtr a (Free (MovePtr b k)))) = optimize' cc (Free (MovePtr (a+b) k))
@@ -135,16 +135,16 @@ optimize' cc (Free (MovePtr 0 k)) = optimize' cc k
 optimize' cc (Free (MovePtr a k)) = spillCache cc $ Free (MovePtr a (optimize' Nothing k))
 
 -- Eliminate read if we have a cached value
-optimize' cc@(Just c) (Free (ReadPtr k)) = optimize' cc (k c)
+optimize' cc@(Just (c,_)) (Free (ReadPtr k)) = optimize' cc (k c)
 
 -- Otherwise, cache the read
-optimize' Nothing (Free (ReadPtr k)) = Free (ReadPtr (\c -> optimize' (Just c) (k c)))
+optimize' Nothing (Free (ReadPtr k)) = Free (ReadPtr (\c -> optimize' (Just (c, False)) (k c)))
 
 -- Write to cache
-optimize' _ (Free (WritePtr a k)) = optimize' (Just a) k
+optimize' _ (Free (WritePtr a k)) = optimize' (Just (a, True)) k
 
 -- Add to cache
-optimize' (Just c) (Free (AddPtr a k)) = optimize' (Just (c+a)) k
+optimize' (Just (c,_)) (Free (AddPtr a k)) = optimize' (Just (c+a, True)) k
 
 -- Combine adds (no cache)
 optimize' Nothing (Free (AddPtr a (Free (AddPtr b k)))) = optimize' Nothing (Free (AddPtr (a+b) k))
@@ -156,14 +156,14 @@ optimize' Nothing (Free (AddPtr 0 k)) = optimize' Nothing k
 optimize' Nothing (Free (AddPtr a k)) = Free (AddPtr a (optimize' Nothing k))
 
 -- If cell cache is 0, then we can skip loops.
-optimize' cc@(Just 0) (Free (Loop _ k)) = optimize' cc k
+optimize' cc@(Just (0,_)) (Free (Loop _ k)) = optimize' cc k
 
 -- Handle special loop forms.
 optimize' cc (Free (Loop body k)) =
     case optimize' Nothing body of
         -- [-] or [+] is a write 0
-        Free (AddPtr (-1) (Pure ())) -> optimize' (Just 0) k
-        Free (AddPtr   1  (Pure ())) -> optimize' (Just 0) k
+        Free (AddPtr (-1) (Pure ())) -> optimize' (Just (0, True)) k
+        Free (AddPtr   1  (Pure ())) -> optimize' (Just (0, True)) k
         -- Otherwise, spill cache before loop and continue
         b' -> spillCache cc $ Free (Loop b' (optimize' Nothing k))
 
@@ -174,9 +174,9 @@ optimize' cc (Free bf) = Free (optimize' cc <$> bf)
 optimize' cc p@(Pure _) = spillCache cc p
 
 -- If there is a value in the cell cache, write it out before continuing.
-spillCache :: Maybe Cell -> BF a -> BF a
-spillCache (Just c) k = Free (WritePtr c k)
-spillCache Nothing  k = k
+spillCache :: Maybe (Cell, Bool) -> BF a -> BF a
+spillCache (Just (c, True)) k = Free (WritePtr c k)
+spillCache _                k = k
 
 -----
 
