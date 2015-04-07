@@ -23,6 +23,7 @@ executable brainfree
   main-is:              Main.hs
   other-extensions:     DeriveFunctor, FlexibleContexts
   ghc-options:          -O2 -Wall
+  ghc-prof-options:     -fprof-auto -Wall
   build-depends:
     base >=4.7 && <4.8,
     transformers >=0.4 && <0.5,
