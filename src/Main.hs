@@ -1,5 +1,6 @@
 module Main where
 
+import Control.Applicative
 import Control.Monad.State.Strict
 import Data.Monoid
 import System.Environment
@@ -24,6 +25,7 @@ runVecMem = withVectorMem defaultMemSize . evalStateT . runBFM step
         step (Output off k)     = bfOutputM (rd off) putc >> k
         step (Loop body k)      = bfLoopM (rd 0) (runBFM step body) >> k
         step (WritePtr off c k) = wr off c >> k
+        step (MultPtr o1 o2 c k) = ((+) <$> rd o1 <*> ((* c) <$> rd o2)) >>= wr o1 >> k
 
 -- | Run a 'BF' in 'IO' using a 'FPtrMem' data store.
 runFPtrMem :: BF () -> IO ()
@@ -38,6 +40,7 @@ runFPtrMem = withFPtrMem defaultMemSize . evalStateT . runBFM step
         step (Output off k)     = bfOutputM (rd off) putc >> k
         step (Loop body k)      = bfLoopM (rd 0) (runBFM step body) >> k
         step (WritePtr off c k) = wr off c >> k
+        step (MultPtr o1 o2 c k) = ((+) <$> rd o1 <*> ((* c) <$> rd o2)) >>= wr o1 >> k
 
 
 -- | Run a 'BF' using an infinite 'Tape'.
@@ -60,6 +63,7 @@ runTape prog = appEndo (toTapeAction prog) finish blankTape 0
         step (Loop body k)    = loop' <> k
             where loop' = moveToOffset 0 <> whenNZ (toTapeAction body <> loop')
         step (WritePtr off c k) = moveToOffset off <> modHead (const c) <> k
+        step (MultPtr o1 o2 c k) = moveToOffset o1 <> tapeMult (o2-o1) c <> k
 
         finish :: Tape -> Offset -> String -> String
         finish _ _ _ = ""
@@ -96,6 +100,12 @@ whenNZ ta = Endo $ \k t p i ->
         then appEndo ta k t p i
         else k t p i
 
+-- | Add n * value at offset to head.
+tapeMult :: Int -> Cell -> TapeAction
+tapeMult off n = Endo $ \k t p i ->
+    let x = tapeRead (tapeMove off t)
+    in appEndo (modHead (+ x*n)) k t p i
+
 -- | Use 'interact' to actually run the result of 'runTape' in 'IO'.
 --
 -- Note that 'interact' closes the stdin handle at the end, so this
@@ -118,6 +128,7 @@ generateC bf = do
         step ind (Output off k)     = ind ++ "putchar(p[" ++ show off ++ "]);\n" ++ k
         step ind (Loop body k)      = ind ++ "while (p[0]) {\n" ++ runBF (step (ind ++ "  ")) (body >> return "") ++ ind ++ "}\n" ++ k
         step ind (WritePtr off c k) = ind ++ "p[" ++ show off ++ "] = " ++ show c ++ ";\n" ++ k
+        step ind (MultPtr o1 o2 c k) = ind ++ "p[" ++ show o1 ++ "] += p[" ++ show o2 ++ "] * " ++ show c ++ ";\n" ++ k
 
 generateHS :: BF () -> IO ()
 generateHS bf = do
@@ -137,6 +148,8 @@ generateHS bf = do
         step (Output off k)     = "bfOutputM (rd (" ++ show off ++ ")) putc;\n" ++ k
         step (Loop body k)      = "bfLoopM (rd 0) (do {\n" ++ runBF step (body >> return "") ++ "});\n" ++ k
         step (WritePtr off c k) = "wr (" ++ show off ++ ") (" ++ show c ++ ");\n" ++ k
+        step (MultPtr o1 o2 c k) = "((+) <$> rd " ++ show o1 ++ " <*> ((* " ++ show c ++ ") <$> rd " ++ show o2 ++ ")) >>= wr " ++ show o1 ++ ";\n" ++ k
+
 
 -- | Handle command line arguments.
 processArgs :: (BF () -> IO ()) -> Bool -> [String] -> IO ()
