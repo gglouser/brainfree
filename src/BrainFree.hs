@@ -5,8 +5,7 @@ A free monad representing an abstract brainfuck machine.
 module BrainFree (
   -- * BF monad
   BF, BFF(..)
-  , movePtr, readPtr, writePtr, addPtr, getChr, putChr, loop
-  , input, output
+  , movePtr, addPtr, input, output, loop, writePtr
   , runBF, runBFM
   -- * Parsing
   , parseString, parseFile
@@ -17,64 +16,49 @@ module BrainFree (
   ) where
 
 import Control.Applicative
-import Control.Monad.Free
-import Control.Monad.Free.Church (fromF)
+import Control.Monad.Free (Free(..))
+import Control.Monad.Free.Church
 import Data.Bifunctor
 import qualified Text.Parsec as P
-import Runtime (Cell, coerce)
+import Runtime (Cell, Offset)
 
 -- | Alias for the free monad on 'BFF' actions.
-type BF = Free BFF
+type BF = F BFF
 
 -- | A functor representing abstract brainfuck machine actions.
-data BFF k = MovePtr !Int k                 -- ^ Move the data pointer the specified amount.
-           | ReadPtr (Cell -> k)            -- ^ Read the current cell at the data pointer.
-           | WritePtr !Cell k               -- ^ Write the given value to the current cell at the data pointer.
-           | AddPtr !Cell k                 -- ^ Add the given value to the current cell at the data pointer.
-                                            --   (Redundant given 'ReadPtr' / 'WritePtr', but allows more optimizations.)
-           | GetChar (Maybe Char -> k)      -- ^ Accept an input character. @Nothing@ indicates end-of-file.
-           | PutChar !Char k                -- ^ Send an output character.
-           | Loop (BF ()) k                 -- ^ Execute a loop using the given program fragment as the loop body.
+data BFF k
+    -- Basic bf commands
+    = MovePtr  !Int          k      -- ^ Move the data pointer the specified amount.
+    | AddPtr   !Offset !Cell k      -- ^ Add to the cell at offset from data pointer.
+    | Input    !Offset       k      -- ^ Accept an input character to cell at offset.
+    | Output   !Offset       k      -- ^ Send output character from cell at offset.
+    | Loop     (BF ())       k      -- ^ Execute a loop.
+    -- Extended bf commands
+    | WritePtr !Offset !Cell k      -- ^ Write to the cell at offset from data pointer.
     deriving Functor
 
 movePtr :: MonadFree BFF m => Int -> m ()
-movePtr n = liftF (MovePtr n ())
+movePtr n = liftF $ MovePtr n ()
 
-readPtr :: MonadFree BFF m => m Cell
-readPtr = liftF (ReadPtr id)
+addPtr :: MonadFree BFF m => Offset -> Cell -> m ()
+addPtr off n = liftF $ AddPtr off n ()
 
-writePtr :: MonadFree BFF m => Cell -> m ()
-writePtr c = liftF (WritePtr c ())
+input :: MonadFree BFF m => Offset -> m ()
+input off = liftF $ Input off ()
 
-addPtr :: MonadFree BFF m => Cell -> m ()
-addPtr n = liftF (AddPtr n ())
-
-getChr :: MonadFree BFF m => m (Maybe Char)
-getChr = liftF (GetChar id)
-
-putChr :: MonadFree BFF m => Char -> m ()
-putChr c = liftF (PutChar c ())
+output :: MonadFree BFF m => Offset -> m ()
+output off = liftF $ Output off ()
 
 loop :: MonadFree BFF m => BF () -> m ()
-loop body = liftF (Loop body ())
+loop body = liftF $ Loop body ()
 
--- | The standard brainfuck input action ("@,@").
---
--- The default behavior is to leave the current cell value unchagned.
--- A free monad interpreter for 'BFF' actions can implement one of the
--- other standard behaviors by returning (the equivalent of) @Just 0@
--- or @Just (-1)@ instead of @Nothing@ when end-of-file is reached.
-input :: MonadFree BFF m => m ()
-input = getChr >>= maybe (return ()) (writePtr . coerce)
-
--- | The standard brainfuck output action ("@.@").
-output :: MonadFree BFF m => m ()
-output = readPtr >>= putChr . coerce
+writePtr :: MonadFree BFF m => Offset -> Cell -> m ()
+writePtr off n = liftF $ WritePtr off n ()
 
 -- | Tear down a 'BF' program using the given function to handle 'BFF' actions
 -- ('iter' specialized to 'BFF').
 runBF :: (BFF a -> a) -> BF a -> a
-runBF = iter
+runBF f p = runF p id f
 
 -- | Tear down a 'BF' program in a 'Monad' using the given function to handle
 -- 'BFF' actions ('iterM' specialized to 'BFF').
@@ -84,21 +68,39 @@ runBFM = iterM
 -----
 
 parseBF :: String -> String -> Either String (BF ())
-parseBF filename = first show . P.parse (parse' <* P.eof) filename
+parseBF filename = first show . P.runParser (skipChars *> parse' <* P.eof) 0 filename
 
-parse' :: P.Parsec String () (BF ())
-parse' = fromF . sequence_ <$> many parse1
+parse' :: P.Parsec String Int (BF ())
+parse' = do
+    chunk <- sequence_ <$> many parse1
+    end <- resetOffset
+    return $ chunk >> end
 
-parse1 :: MonadFree BFF m => P.Parsec String () (m ())
-parse1 = '<' ~> movePtr (-1)
-     <|> '>' ~> movePtr 1
-     <|> '-' ~> addPtr (-1)
-     <|> '+' ~> addPtr 1
-     <|> ',' ~> input
-     <|> '.' ~> output
-     <|> loop <$> P.between (P.char '[') (P.char ']') parse'
-     <|> return () <$ P.noneOf "]"
-    where c ~> i = i <$ P.char c
+parse1 :: MonadFree BFF m => P.Parsec String Int (m ())
+parse1 = moves
+     <|> adds
+     <|> input  <$> getOffset <* tok ','
+     <|> output <$> getOffset <* tok '.'
+     <|> (>>) <$> resetOffset <*> (loop <$> P.between (tok '[') (tok ']') parse')
+    where
+        tok c = P.char c <* skipChars
+        getOffset = P.getState
+        moves = do
+            n <- sum <$> some (1 <$ tok '>' <|> (-1) <$ tok '<')
+            P.modifyState (+ n)
+            return (return ())
+        adds = do
+            n <- sum <$> some (1 <$ tok '+' <|> (-1) <$ tok '-')
+            if n == 0 then return (return ()) else addPtr <$> getOffset <*> pure n
+
+skipChars :: P.Parsec String u ()
+skipChars = P.skipMany $ P.noneOf "<>-+,.[]"
+
+resetOffset :: MonadFree BFF m => P.Parsec s Int (m ())
+resetOffset = do
+    offset <- P.getState
+    P.setState 0
+    return $ if offset == 0 then return () else movePtr offset
 
 -- | Parse a string containing a brainfuck program and return either
 -- an error message or a @'BF' ()@ representing the program.
@@ -113,70 +115,18 @@ parseFile filename = parseBF filename <$> readFile filename
 -----
 
 -- | Optimize a sequence of actions in the 'BF' monad.
---
--- * Combine data pointer moves ("@>@" and "@<@").
--- * Combine data adds/subtracts ("@+@" and "@-@").
--- * Simple loops "@[-]@" and "@[+]@" become @'WritePtr' 0@.
--- * Cache the value of the current cell at the data pointer and use
---   it to eliminate reads and defer writes.
 optimize :: BF a -> BF a
-optimize = optimize' (Just (0, False))
+optimize = toF . optSpecLoops . fromF
 
--- 'optimize' worker that passes the cached cell value and dirty flag.
-optimize' :: Maybe (Cell, Bool) -> Free BFF a -> Free BFF a
-
--- Combine moves
-optimize' cc (Free (MovePtr a (Free (MovePtr b k)))) = optimize' cc (Free (MovePtr (a+b) k))
-
--- Move 0 is a nop
-optimize' cc (Free (MovePtr 0 k)) = optimize' cc k
-
--- Spill cell cache on move
-optimize' cc (Free (MovePtr a k)) = spillCache cc $ Free (MovePtr a (optimize' Nothing k))
-
--- Eliminate read if we have a cached value
-optimize' cc@(Just (c,_)) (Free (ReadPtr k)) = optimize' cc (k c)
-
--- Otherwise, cache the read
-optimize' Nothing (Free (ReadPtr k)) = Free (ReadPtr (\c -> optimize' (Just (c, False)) (k c)))
-
--- Write to cache
-optimize' _ (Free (WritePtr a k)) = optimize' (Just (a, True)) k
-
--- Add to cache
-optimize' (Just (c,_)) (Free (AddPtr a k)) = optimize' (Just (c+a, True)) k
-
--- Combine adds (no cache)
-optimize' Nothing (Free (AddPtr a (Free (AddPtr b k)))) = optimize' Nothing (Free (AddPtr (a+b) k))
-
--- Add 0 (no cache) is a nop.
-optimize' Nothing (Free (AddPtr 0 k)) = optimize' Nothing k
-
--- Add with no cache: emit an add command
-optimize' Nothing (Free (AddPtr a k)) = Free (AddPtr a (optimize' Nothing k))
-
--- If cell cache is 0, then we can skip loops.
-optimize' cc@(Just (0,_)) (Free (Loop _ k)) = optimize' cc k
-
--- Handle special loop forms.
-optimize' cc (Free (Loop body k)) =
-    case optimize' Nothing body of
-        -- [-] or [+] is a write 0
-        Free (AddPtr (-1) (Pure ())) -> optimize' (Just (0, True)) k
-        Free (AddPtr   1  (Pure ())) -> optimize' (Just (0, True)) k
-        -- Otherwise, spill cache before loop and continue
-        b' -> spillCache cc $ Free (Loop b' (optimize' Nothing k))
-
--- Handle all other commands
-optimize' cc (Free bf) = Free (optimize' cc <$> bf)
-
--- Write cell cache at end (end of program doesn't matter, but can also be end of loop body.)
-optimize' cc p@(Pure _) = spillCache cc p
-
--- If there is a value in the cell cache, write it out before continuing.
-spillCache :: Maybe (Cell, Bool) -> BF a -> BF a
-spillCache (Just (c, True)) k = Free (WritePtr c k)
-spillCache _                k = k
+-- Check for special loop forms.
+optSpecLoops :: Free BFF a -> Free BFF a
+optSpecLoops (Free (Loop body k)) =
+    case optSpecLoops (fromF body) of
+        Free (AddPtr 0 (-1) (Pure ())) -> Free (WritePtr 0 0 (optSpecLoops k))
+        Free (AddPtr 0 ( 1) (Pure ())) -> Free (WritePtr 0 0 (optSpecLoops k))
+        b' -> Free (Loop (toF b') (optSpecLoops k))
+optSpecLoops (Free bf) = Free (optSpecLoops <$> bf)
+optSpecLoops p = p
 
 -----
 
@@ -184,10 +134,9 @@ spillCache _                k = k
 dumpBF :: BF () -> String
 dumpBF = runBF step . (>> return "")
     where
-        step (MovePtr n k)  = "MovePtr " ++ show n ++ "; " ++ k
-        step (ReadPtr k)    = "ReadPtr; " ++ k 32
-        step (WritePtr n k) = "WritePtr " ++ show n ++ "; " ++ k
-        step (AddPtr n k)   = "AddPtr +" ++ show n ++ "; " ++ k
-        step (GetChar k)    = "GetChar; " ++ k (Just 'A')
-        step (PutChar c k)  = "PutChar " ++ show c ++ "; " ++ k
-        step (Loop body k)  = "Loop [" ++ dumpBF body ++ "]; " ++ k
+        step (MovePtr n k)      = "MovePtr " ++ show n ++ ";\n" ++ k
+        step (AddPtr off n k)   = "AddPtr @" ++ show off ++ " +" ++ show n ++ ";\n" ++ k
+        step (Input off k)      = "Input @" ++ show off ++ ";\n" ++ k
+        step (Output off k)     = "Output @" ++ show off ++ ";\n" ++ k
+        step (Loop body k)      = "Loop {\n" ++ dumpBF body ++ "}\n" ++ k
+        step (WritePtr off n k) = "WritePtr @" ++ show off ++ " " ++ show n ++ ";\n" ++ k

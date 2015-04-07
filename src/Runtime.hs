@@ -10,17 +10,30 @@ import qualified Data.Vector.Unboxed.Mutable as V
 import Data.Word (Word8)
 import Foreign.Ptr (Ptr)
 import Foreign.Marshal.Array (advancePtr, withArray)
-import Foreign.Storable (peek, poke)
+import Foreign.Storable (peekElemOff, pokeElemOff)
 import System.IO (isEOF)
 
 -- | This type is used as the unit of memory by all of our bf machines.
 type Cell = Word8
+
+type Offset = Int
 
 -- | Convert between 'Enum' types.
 -- This is a convenient way to convert 'Cell' to 'Char' and vice versa,
 -- since both are Enums.
 coerce :: (Enum a, Enum b) => a -> b
 coerce = toEnum . fromEnum
+
+-- | General monadic bf input, given an action to fetch a character
+-- and an action to write a cell to the data array.
+-- The default behavior is to leave the current cell value unchagned.
+bfInputM :: Monad m => m (Maybe Char) -> (Cell -> m ()) -> m ()
+bfInputM gc wr = gc >>= maybe (return ()) (wr . coerce)
+
+-- | General monadic bf output, given an action to read a cell
+-- and an action to send a character.
+bfOutputM :: Monad m => m Cell -> (Char -> m ()) -> m ()
+bfOutputM rd pc = rd >>= pc . coerce
 
 -- | General monadic bf loop, given an action that reads the current cell value
 -- and an action for the loop body.
@@ -96,12 +109,12 @@ vecMove :: Int -> VectorMem -> VectorMem
 vecMove n (VM v p) = VM v (p + n)
 
 -- | Get the value of the current cell.
-vecRead :: MonadIO m => VectorMem -> m Cell
-vecRead (VM v p) = liftIO $ V.unsafeRead v p
+vecRead :: MonadIO m => Offset -> VectorMem -> m Cell
+vecRead off (VM v p) = liftIO $ V.unsafeRead v (p + off)
 
 -- | Set the value of the current cell.
-vecWrite :: MonadIO m => Cell -> VectorMem -> m ()
-vecWrite x (VM v p) = liftIO $ V.unsafeWrite v p x
+vecWrite :: MonadIO m => Offset -> Cell -> VectorMem -> m ()
+vecWrite off x (VM v p) = liftIO $ V.unsafeWrite v (p + off) x
 
 
 -- * Foreign pointer/array memory
@@ -119,9 +132,9 @@ fptrMove :: Int -> FPtrMem -> FPtrMem
 fptrMove = flip advancePtr
 
 -- | Get the value of the current cell.
-fptrRead :: MonadIO m => FPtrMem -> m Cell
-fptrRead = liftIO . peek
+fptrRead :: MonadIO m => Offset -> FPtrMem -> m Cell
+fptrRead off ptr = liftIO $ peekElemOff ptr off
 
 -- | Set the value of the current cell.
-fptrWrite :: MonadIO m => Cell -> FPtrMem -> m ()
-fptrWrite x p = liftIO $ poke p x
+fptrWrite :: MonadIO m => Offset -> Cell -> FPtrMem -> m ()
+fptrWrite off x ptr = liftIO $ pokeElemOff ptr off x
