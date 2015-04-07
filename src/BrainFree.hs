@@ -33,7 +33,7 @@ data BFF k
     | AddPtr   !Offset !Cell k          -- ^ Add to the cell at offset from data pointer.
     | Input    !Offset       k          -- ^ Accept an input character to cell at offset.
     | Output   !Offset       k          -- ^ Send output character from cell at offset.
-    | Loop     (BF ())       k          -- ^ Execute a loop.
+    | Loop     !Offset (BF ()) k          -- ^ Execute a loop.
     -- Extended bf commands
     | WritePtr !Offset !Cell k          -- ^ Write to the cell at offset from data pointer.
     | MultPtr  !Offset !Offset !Cell k  -- ^ @offset1 += @offset2 * c
@@ -51,8 +51,8 @@ input off = liftF $ Input off ()
 output :: MonadFree BFF m => Offset -> m ()
 output off = liftF $ Output off ()
 
-loop :: MonadFree BFF m => BF () -> m ()
-loop body = liftF $ Loop body ()
+loop :: MonadFree BFF m => Offset -> BF () -> m ()
+loop off body = liftF $ Loop off body ()
 
 writePtr :: MonadFree BFF m => Offset -> Cell -> m ()
 writePtr off n = liftF $ WritePtr off n ()
@@ -86,7 +86,7 @@ parse1 = moves
      <|> adds
      <|> input  <$> getOffset <* tok ','
      <|> output <$> getOffset <* tok '.'
-     <|> (>>) <$> resetOffset <*> (loop <$> P.between (tok '[') (tok ']') parse')
+     <|> (>>) <$> resetOffset <*> (loop 0 <$> P.between (tok '[') (tok ']') parse')
     where
         tok c = P.char c <* skipChars
         getOffset = P.getState
@@ -121,16 +121,16 @@ parseFile filename = parseBF filename <$> readFile filename
 
 -- | Optimize a sequence of actions in the 'BF' monad.
 optimize :: BF a -> BF a
-optimize = toF . optDeferMoves 0 . optSpecLoops . fromF
+optimize = toF . optDeferMoves 0 0 . optSpecLoops . fromF
 
 -- Check for special loop forms.
 optSpecLoops :: Free BFF a -> Free BFF a
-optSpecLoops (Free (Loop body k)) =
+optSpecLoops (Free (Loop off body k)) =
     let body' = fromF body
         k' = optSpecLoops k
     in case checkMultLoop 0 Map.empty body' of
-        Just ms -> genMults ms k'
-        Nothing -> Free (Loop (toF $ optSpecLoops body') k')
+        Just ms -> genMults off ms k'
+        Nothing -> Free (Loop off (toF $ optSpecLoops body') k')
 optSpecLoops (Free bf) = Free (optSpecLoops <$> bf)
 optSpecLoops p = p
 
@@ -144,25 +144,25 @@ checkMultLoop 0 xs (Pure _) =
         _ -> Nothing
 checkMultLoop _ _ _ = Nothing
 
-genMults :: Map.IntMap Cell -> Free BFF a -> Free BFF a
-genMults ms cont = Map.foldrWithKey mult (Free (WritePtr 0 0 cont)) ms
+genMults :: Offset -> Map.IntMap Cell -> Free BFF a -> Free BFF a
+genMults off ms cont = Map.foldrWithKey mult (Free (WritePtr off 0 cont)) ms
     where
         mult 0 _ k = k
-        mult p v k = Free (MultPtr p 0 v k)
+        mult p v k = Free (MultPtr (p+off) 0 v k)
 
 -- Defer moves
 -- This also happens during parse but more can be done
 -- after transforming special loops.
-optDeferMoves :: Int -> Free BFF a -> Free BFF a
-optDeferMoves p (Free (MovePtr n k))  = optDeferMoves (p+n) k
-optDeferMoves p (Free (AddPtr o c k)) = Free (AddPtr (p+o) c (optDeferMoves p k))
-optDeferMoves p (Free (Input o k))    = Free (Input  (p+o)   (optDeferMoves p k))
-optDeferMoves p (Free (Output o k))   = Free (Output (p+o)   (optDeferMoves p k))
-optDeferMoves p (Free (Loop body k))  = emitMove p $
-    Free (Loop (toF . optDeferMoves 0 $ fromF body) (optDeferMoves 0 k))
-optDeferMoves p (Free (WritePtr o c k)) = Free (WritePtr (p+o) c (optDeferMoves p k))
-optDeferMoves p (Free (MultPtr o1 o2 c k)) = Free (MultPtr (p+o1) (p+o2) c (optDeferMoves p k))
-optDeferMoves p end@(Pure _) = emitMove p end
+optDeferMoves :: Int -> Int -> Free BFF a -> Free BFF a
+optDeferMoves p b (Free (MovePtr n k))  = optDeferMoves (p+n) b k
+optDeferMoves p b (Free (AddPtr o c k)) = Free (AddPtr (p+o) c (optDeferMoves p b k))
+optDeferMoves p b (Free (Input o k))    = Free (Input  (p+o)   (optDeferMoves p b k))
+optDeferMoves p b (Free (Output o k))   = Free (Output (p+o)   (optDeferMoves p b k))
+optDeferMoves p b (Free (Loop o body k))  =
+    Free (Loop (p+o) (toF . optDeferMoves p p $ fromF body) (optDeferMoves p b k))
+optDeferMoves p b (Free (WritePtr o c k)) = Free (WritePtr (p+o) c (optDeferMoves p b k))
+optDeferMoves p b (Free (MultPtr o1 o2 c k)) = Free (MultPtr (p+o1) (p+o2) c (optDeferMoves p b k))
+optDeferMoves p b end@(Pure _) = emitMove (p-b) end
 
 emitMove :: Int -> Free BFF a -> Free BFF a
 emitMove 0 k = k
@@ -178,6 +178,6 @@ dumpBF = runBF step . (>> return "")
         step (AddPtr off n k)   = "AddPtr @" ++ show off ++ " += " ++ show n ++ ";\n" ++ k
         step (Input off k)      = "Input @" ++ show off ++ ";\n" ++ k
         step (Output off k)     = "Output @" ++ show off ++ ";\n" ++ k
-        step (Loop body k)      = "Loop {\n" ++ dumpBF body ++ "}\n" ++ k
+        step (Loop off body k)      = "Loop (@" ++ show off ++ ") {\n" ++ dumpBF body ++ "}\n" ++ k
         step (WritePtr off n k) = "WritePtr @" ++ show off ++ " = " ++ show n ++ ";\n" ++ k
         step (MultPtr o1 o2 n k) = "MultPtr @" ++ show o1 ++ " += @" ++ show o2 ++ " * " ++ show n ++ ";\n" ++ k

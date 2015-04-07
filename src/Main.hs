@@ -23,7 +23,7 @@ runVecMem = withVectorMem defaultMemSize . evalStateT . runBFM step
         step (AddPtr off c k)   = rd off >>= wr off . (+ c) >> k
         step (Input off k)      = bfInputM getc (wr off) >> k
         step (Output off k)     = bfOutputM (rd off) putc >> k
-        step (Loop body k)      = bfLoopM (rd 0) (runBFM step body) >> k
+        step (Loop off body k)      = bfLoopM (rd off) (runBFM step body) >> k
         step (WritePtr off c k) = wr off c >> k
         step (MultPtr o1 o2 c k) = ((+) <$> rd o1 <*> ((* c) <$> rd o2)) >>= wr o1 >> k
 
@@ -38,7 +38,7 @@ runFPtrMem = withFPtrMem defaultMemSize . evalStateT . runBFM step
         step (AddPtr off c k)   = rd off >>= wr off . (+ c) >> k
         step (Input off k)      = bfInputM getc (wr off) >> k
         step (Output off k)     = bfOutputM (rd off) putc >> k
-        step (Loop body k)      = bfLoopM (rd 0) (runBFM step body) >> k
+        step (Loop off body k)      = bfLoopM (rd off) (runBFM step body) >> k
         step (WritePtr off c k) = wr off c >> k
         step (MultPtr o1 o2 c k) = ((+) <$> rd o1 <*> ((* c) <$> rd o2)) >>= wr o1 >> k
 
@@ -60,8 +60,8 @@ runTape prog = appEndo (toTapeAction prog) finish blankTape 0
         step (AddPtr off c k) = moveToOffset off <> modHead (+ c) <> k
         step (Input off k)    = moveToOffset off <> tapeInput <> k
         step (Output off k)   = moveToOffset off <> tapeOutput <> k
-        step (Loop body k)    = loop' <> k
-            where loop' = moveToOffset 0 <> whenNZ (toTapeAction body <> loop')
+        step (Loop off body k) = loop' <> k
+            where loop' = moveToOffset off <> whenNZ (toTapeAction body <> loop')
         step (WritePtr off c k) = moveToOffset off <> modHead (const c) <> k
         step (MultPtr o1 o2 c k) = moveToOffset o1 <> tapeMult (o2-o1) c <> k
 
@@ -126,7 +126,7 @@ generateC bf = do
         step ind (AddPtr off c k)   = ind ++ "p[" ++ show off ++ "] += " ++ show c ++ ";\n" ++ k
         step ind (Input off k)      = ind ++ "p[" ++ show off ++ "] = getchar();\n" ++ k
         step ind (Output off k)     = ind ++ "putchar(p[" ++ show off ++ "]);\n" ++ k
-        step ind (Loop body k)      = ind ++ "while (p[0]) {\n" ++ runBF (step (ind ++ "  ")) (body >> return "") ++ ind ++ "}\n" ++ k
+        step ind (Loop off body k)      = ind ++ "while (p[" ++ show off ++ "]) {\n" ++ runBF (step (ind ++ "  ")) (body >> return "") ++ ind ++ "}\n" ++ k
         step ind (WritePtr off c k) = ind ++ "p[" ++ show off ++ "] = " ++ show c ++ ";\n" ++ k
         step ind (MultPtr o1 o2 c k) = ind ++ "p[" ++ show o1 ++ "] += p[" ++ show o2 ++ "] * " ++ show c ++ ";\n" ++ k
 
@@ -146,7 +146,7 @@ generateHS bf = do
         step (AddPtr off c k)   = "rd (" ++ show off ++ ") >>= wr (" ++ show off ++ ") . (+ (" ++ show c ++ "));\n" ++ k
         step (Input off k)      = "bfInputM getc (wr (" ++ show off ++ "));\n" ++ k
         step (Output off k)     = "bfOutputM (rd (" ++ show off ++ ")) putc;\n" ++ k
-        step (Loop body k)      = "bfLoopM (rd 0) (do {\n" ++ runBF step (body >> return "") ++ "});\n" ++ k
+        step (Loop off body k)      = "bfLoopM (rd " ++ show off ++ ") (do {\n" ++ runBF step (body >> return "") ++ "});\n" ++ k
         step (WritePtr off c k) = "wr (" ++ show off ++ ") (" ++ show c ++ ");\n" ++ k
         step (MultPtr o1 o2 c k) = "((+) <$> rd " ++ show o1 ++ " <*> ((* " ++ show c ++ ") <$> rd " ++ show o2 ++ ")) >>= wr " ++ show o1 ++ ";\n" ++ k
 
