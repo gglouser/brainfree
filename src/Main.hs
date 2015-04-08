@@ -1,69 +1,74 @@
 module Main where
 
-import Control.Applicative
 import Control.Monad.State.Strict
 import Data.Monoid
 import System.Environment
 import System.IO
 
 import BrainFree
+import Instructions
 import Runtime
 
 defaultMemSize :: Int
 defaultMemSize = 30000
 
--- | Run a 'BF' in 'IO' using a 'VectorMem' data store.
-runVecMem :: BF () -> IO ()
-runVecMem = withVectorMem defaultMemSize . evalStateT . runBFM step
+-- | Evaluate a brainfuck program in the BF monad.
+eval :: [Instr] -> BF ()
+eval = mapM_ eval1
     where
-        rd off   = get >>= vecRead off
-        wr off n = get >>= vecWrite off n
+        eval1 (IMovePtr n)      = movePtr n
+        eval1 (IAddPtr off c)   = readPtr off >>= writePtr off . (+ c)
+        eval1 (IInput off)      = getChr >>= maybe (return ()) (writePtr off . coerce)
+        eval1 (IOutput off)     = readPtr off >>= putChr . coerce
+        eval1 (ILoop off body)  = loop off (eval body)
+        eval1 (IWritePtr off c) = writePtr off c
+        eval1 (IMultPtr dstOff srcOff c) = do
+            x <- readPtr dstOff
+            y <- readPtr srcOff
+            writePtr dstOff $ x + y*c
 
+-- | Run a bf program in 'IO' using a 'VectorMem' data store.
+runVecMem :: [Instr] -> IO ()
+runVecMem = withVectorMem defaultMemSize . evalStateT . runBFM step . eval
+    where
         step (MovePtr n k)      = modify (vecMove n) >> k
-        step (AddPtr off c k)   = rd off >>= wr off . (+ c) >> k
-        step (Input off k)      = bfInputM getc (wr off) >> k
-        step (Output off k)     = bfOutputM (rd off) putc >> k
-        step (Loop off body k)      = bfLoopM (rd off) (runBFM step body) >> k
-        step (WritePtr off c k) = wr off c >> k
-        step (MultPtr o1 o2 c k) = ((+) <$> rd o1 <*> ((* c) <$> rd o2)) >>= wr o1 >> k
+        step (ReadPtr off k)    = get >>= vecRead off >>= k
+        step (WritePtr off c k) = get >>= vecWrite off c >> k
+        step (GetChar k)        = getc >>= k
+        step (PutChar c k)      = putc c >> k
+        step (Loop off body k)  = bfLoopM (get >>= vecRead off) (runBFM step body) >> k
 
--- | Run a 'BF' in 'IO' using a 'FPtrMem' data store.
-runFPtrMem :: BF () -> IO ()
-runFPtrMem = withFPtrMem defaultMemSize . evalStateT . runBFM step
+-- | Run a bf program in 'IO' using a 'FPtrMem' data store.
+runFPtrMem :: [Instr] -> IO ()
+runFPtrMem = withFPtrMem defaultMemSize . evalStateT . runBFM step . eval
     where
-        rd off   = get >>= fptrRead off
-        wr off n = get >>= fptrWrite off n
-
         step (MovePtr n k)      = modify (fptrMove n) >> k
-        step (AddPtr off c k)   = rd off >>= wr off . (+ c) >> k
-        step (Input off k)      = bfInputM getc (wr off) >> k
-        step (Output off k)     = bfOutputM (rd off) putc >> k
-        step (Loop off body k)      = bfLoopM (rd off) (runBFM step body) >> k
-        step (WritePtr off c k) = wr off c >> k
-        step (MultPtr o1 o2 c k) = ((+) <$> rd o1 <*> ((* c) <$> rd o2)) >>= wr o1 >> k
+        step (ReadPtr off k)    = get >>= fptrRead off >>= k
+        step (WritePtr off c k) = get >>= fptrWrite off c >> k
+        step (GetChar k)        = getc >>= k
+        step (PutChar c k)      = putc c >> k
+        step (Loop off body k)  = bfLoopM (get >>= fptrRead off) (runBFM step body) >> k
 
-
--- | Run a 'BF' using an infinite 'Tape'.
+-- | Run a bf program using an infinite 'Tape'.
 --
 -- To make it interesting, does not use auxiliary monads, but instead
 -- endomorphisms of @'Tape' -> 'Offset' -> 'String' -> 'String'@.
 -- The result is an 'interact'-style @'String' -> 'String'@ function
 -- that takes a 'String' for input and produces a 'String' as output.
-runTape :: BF () -> String -> String
-runTape prog = appEndo (toTapeAction prog) finish blankTape 0
+runTape :: [Instr] -> String -> String
+runTape prog = appEndo (toTapeAction $ eval prog) finish blankTape 0
     where
         toTapeAction :: BF () -> TapeAction
         toTapeAction bf = runBF step (bf >> return mempty)
 
         step :: BFF (TapeAction) -> TapeAction
-        step (MovePtr n k)    = changeRefPos n <> k
-        step (AddPtr off c k) = moveToOffset off <> modHead (+ c) <> k
-        step (Input off k)    = moveToOffset off <> tapeInput <> k
-        step (Output off k)   = moveToOffset off <> tapeOutput <> k
-        step (Loop off body k) = loop' <> k
+        step (MovePtr n k)      = changeRefPos n <> k
+        step (ReadPtr off k)    = moveToOffset off <> tread k
+        step (WritePtr off c k) = moveToOffset off <> twrite c <> k
+        step (GetChar k)        = tgetc k
+        step (PutChar c k)      = tputc c <> k
+        step (Loop off body k)  = loop' <> k
             where loop' = moveToOffset off <> whenNZ (toTapeAction body <> loop')
-        step (WritePtr off c k) = moveToOffset off <> modHead (const c) <> k
-        step (MultPtr o1 o2 c k) = moveToOffset o1 <> tapeMult (o2-o1) c <> k
 
         finish :: Tape -> Offset -> String -> String
         finish _ _ _ = ""
@@ -78,20 +83,20 @@ changeRefPos n = Endo $ \k t p i -> k t (p - n) i
 moveToOffset :: Offset -> TapeAction
 moveToOffset off = Endo $ \k t p i -> k (tapeMove (off - p) t) off i
 
--- | Apply the function to the cell at the tape head.
-modHead :: (Cell -> Cell) -> TapeAction
-modHead f = Endo $ \k t p i -> k (tapeWrite (f (tapeRead t)) t) p i
+tread :: (Cell -> TapeAction) -> TapeAction
+tread f = Endo $ \k t p i -> appEndo (f (tapeRead t)) k t p i
 
--- | Take input. Does not change tape if input is empty.
-tapeInput :: TapeAction
-tapeInput = Endo $ \k t p i ->
+twrite :: Cell -> TapeAction
+twrite c = Endo $ \k t p i -> k (tapeWrite c t) p i
+
+tgetc :: (Maybe Char -> TapeAction) -> TapeAction
+tgetc f = Endo $ \k t p i ->
     case i of
-        c : cs -> appEndo (modHead . const $ coerce c) k t p cs
-        []     -> k t p []
+        c : cs -> appEndo (f (Just c)) k t p cs
+        []     -> appEndo (f Nothing) k t p []
 
--- | Output the cell at the tape head.
-tapeOutput :: TapeAction
-tapeOutput = Endo $ \k t p i -> coerce (tapeRead t) : k t p i
+tputc :: Char -> TapeAction
+tputc c = Endo $ \k t p i -> c : k t p i
 
 -- | Execute the given tape action when the cell at tape head is non-zero.
 whenNZ :: TapeAction -> TapeAction
@@ -100,59 +105,59 @@ whenNZ ta = Endo $ \k t p i ->
         then appEndo ta k t p i
         else k t p i
 
--- | Add n * value at offset to head.
-tapeMult :: Int -> Cell -> TapeAction
-tapeMult off n = Endo $ \k t p i ->
-    let x = tapeRead (tapeMove off t)
-    in appEndo (modHead (+ x*n)) k t p i
-
 -- | Use 'interact' to actually run the result of 'runTape' in 'IO'.
 --
 -- Note that 'interact' closes the stdin handle at the end, so this
 -- can't be used to run multiple programs in the same session.
-runTapeIO :: BF () -> IO ()
+runTapeIO :: [Instr] -> IO ()
 runTapeIO = interact . runTape
 
-
-generateC :: BF () -> IO ()
-generateC bf = do
-    putStrLn "/* generated by brainfree */"
-    putStrLn "unsigned char m[30000], *p = m;"
-    putStrLn "int main(void) {"
-    putStr $ runBF (step "  ") (bf >> return "")
-    putStrLn "  return 0;\n}\n"
+-- | Generate C code for a bf program.
+generateC :: [Instr] -> IO ()
+generateC bf = putStr . unlines $
+    [ "/* generated by brainfree */"
+    , "unsigned char m[30000], *p = m;"
+    , "int main(void) {" ]
+    ++ genBlock bf
+    ++ [indent "return 0;", "}"]
     where
-        step ind (MovePtr n k)      = ind ++ "p += " ++ show n ++ ";\n" ++ k
-        step ind (AddPtr off c k)   = ind ++ "p[" ++ show off ++ "] += " ++ show c ++ ";\n" ++ k
-        step ind (Input off k)      = ind ++ "p[" ++ show off ++ "] = getchar();\n" ++ k
-        step ind (Output off k)     = ind ++ "putchar(p[" ++ show off ++ "]);\n" ++ k
-        step ind (Loop off body k)      = ind ++ "while (p[" ++ show off ++ "]) {\n" ++ runBF (step (ind ++ "  ")) (body >> return "") ++ ind ++ "}\n" ++ k
-        step ind (WritePtr off c k) = ind ++ "p[" ++ show off ++ "] = " ++ show c ++ ";\n" ++ k
-        step ind (MultPtr o1 o2 c k) = ind ++ "p[" ++ show o1 ++ "] += p[" ++ show o2 ++ "] * " ++ show c ++ ";\n" ++ k
+        indent = ("  " ++)
+        genBlock = map indent . concatMap step
+        step (IMovePtr n)       = ["p += " ++ show n ++ ";"]
+        step (IAddPtr off c)    = ["p[" ++ show off ++ "] += " ++ show c ++ ";"]
+        step (IInput off)       = ["p[" ++ show off ++ "] = getchar();"]
+        step (IOutput off)      = ["putchar(p[" ++ show off ++ "]);"]
+        step (ILoop off body)   = ["while (p[" ++ show off ++ "]) {"]
+                                    ++ genBlock body
+                                    ++ ["}"]
+        step (IWritePtr off c)  = ["p[" ++ show off ++ "] = " ++ show c ++ ";"]
+        step (IMultPtr o1 o2 c) = ["p[" ++ show o1 ++ "] += p[" ++ show o2 ++ "] * " ++ show c ++ ";"]
 
-generateHS :: BF () -> IO ()
-generateHS bf = do
-    putStrLn "import Control.Monad.State.Strict"
-    putStrLn "import System.IO"
-    putStrLn "import Runtime"
-    putStrLn "rd off = get >>= fptrRead off"
-    putStrLn "wr off n = get >>= fptrWrite off n"
-    putStrLn "main = hSetBuffering stdout NoBuffering >> run"
-    putStrLn "run = withFPtrMem 30000 . evalStateT $ do {"
-    putStr $ runBF step (bf >> return "")
-    putStrLn "}"
+-- | Generate Haskell code for a bf program.
+generateHS :: [Instr] -> IO ()
+generateHS bf = putStr . unlines $
+    [ "import Runtime"
+    , "import Control.Applicative"
+    , "import Control.Monad.State.Strict"
+    , "import System.IO"
+    , "rd off = get >>= fptrRead off"
+    , "wr off n = get >>= fptrWrite off n"
+    , "main = hSetBuffering stdout NoBuffering >> run"
+    , "run = withFPtrMem 30000 . evalStateT $ do"
+    ] ++ genBlock bf
     where
-        step (MovePtr n k)      = "modify (fptrMove (" ++ show n ++ "));\n" ++ k
-        step (AddPtr off c k)   = "rd (" ++ show off ++ ") >>= wr (" ++ show off ++ ") . (+ (" ++ show c ++ "));\n" ++ k
-        step (Input off k)      = "bfInputM getc (wr (" ++ show off ++ "));\n" ++ k
-        step (Output off k)     = "bfOutputM (rd (" ++ show off ++ ")) putc;\n" ++ k
-        step (Loop off body k)      = "bfLoopM (rd " ++ show off ++ ") (do {\n" ++ runBF step (body >> return "") ++ "});\n" ++ k
-        step (WritePtr off c k) = "wr (" ++ show off ++ ") (" ++ show c ++ ");\n" ++ k
-        step (MultPtr o1 o2 c k) = "((+) <$> rd " ++ show o1 ++ " <*> ((* " ++ show c ++ ") <$> rd " ++ show o2 ++ ")) >>= wr " ++ show o1 ++ ";\n" ++ k
-
+        indent = ("  " ++)
+        genBlock = map indent . concatMap step
+        step (IMovePtr n)       = ["modify $ fptrMove (" ++ show n ++ ")"]
+        step (IAddPtr off c)    = ["rd (" ++ show off ++ ") >>= wr (" ++ show off ++ ") . (+ (" ++ show c ++ "))"]
+        step (IInput off)       = ["bfInputM getc (wr (" ++ show off ++ "))"]
+        step (IOutput off)      = ["bfOutputM (rd (" ++ show off ++ ")) putc"]
+        step (ILoop off body)   = ("bfLoopM (rd " ++ show off ++ ") $ do") : genBlock body
+        step (IWritePtr off c)  = ["wr (" ++ show off ++ ") (" ++ show c ++ ")"]
+        step (IMultPtr o1 o2 c) = ["((+) <$> rd " ++ show o1 ++ " <*> ((* " ++ show c ++ ") <$> rd " ++ show o2 ++ ")) >>= wr " ++ show o1]
 
 -- | Handle command line arguments.
-processArgs :: (BF () -> IO ()) -> Bool -> [String] -> IO ()
+processArgs :: ([Instr] -> IO ()) -> Bool -> [String] -> IO ()
 processArgs _ o ("-v":args) = processArgs runVecMem o args
 processArgs _ o ("-f":args) = processArgs runFPtrMem o args
 processArgs _ o ("-t":args) = processArgs runTapeIO o args
@@ -161,7 +166,7 @@ processArgs _ o ("-h":args) = processArgs generateHS o args
 processArgs r _ ("-o":args) = processArgs r True args
 processArgs _ _ (('-':_):_) = usage
 processArgs runner o (filename:_) =
-    parseFile filename >>= either print (if o then runner . optimize else runner)
+    parseFile filename >>= either print (runner . if o then optimize else id)
 processArgs _ _ _ = usage
 
 usage :: IO ()
