@@ -59,36 +59,49 @@ data Stream = Cell :> Stream
 
 -- | A bidirectionally infinite tape with one 'Cell' that can be read
 -- from or written to by a notional /tape head/ that can be moved left
--- or right along the tape.
-data Tape = T Stream !Cell Stream
+-- or right along the tape. Also track the current position relative
+-- to the /data pointer/.
+data Tape = T !Offset Stream !Cell Stream
 
 -- | A tape initialized to all zeros.
 blankTape :: Tape
-blankTape = T zs 0 zs
+blankTape = T 0 zs 0 zs
     where zs = 0 :> zs
 
 -- | Move tape head one cell to the left.
 tapeLeft :: Tape -> Tape
-tapeLeft (T (h' :> l) h r) = T l h' (h :> r)
+tapeLeft (T p (h' :> l) h r) = T (p-1) l h' (h :> r)
 
 -- | Move tape head one cell to the right.
 tapeRight :: Tape -> Tape
-tapeRight (T l h (h' :> r)) = T (h :> l) h' r
+tapeRight (T p l h (h' :> r)) = T (p+1) (h :> l) h' r
 
--- | Move tape head an arbitrary amount.
+-- | Read at tape head.
+tapeRead' :: Tape -> Cell
+tapeRead' (T _ _ h _) = h
+
+-- | Write to tape head.
+tapeWrite' :: Cell -> Tape -> Tape
+tapeWrite' x (T p l _ r) = T p l x r
+
+-- | Move pointer. No need to actually move the tape, just update relative position.
+tapeMove :: Offset -> Tape -> Tape
+tapeMove n (T p l h r) = T (p - n) l h r
+
+-- | Move tape to give offset relative to pointer.
 -- Positive argument moves to the right, negative moves to the left.
-tapeMove :: Int -> Tape -> Tape
-tapeMove n t
-    | n < 0     = iterate tapeLeft t !! (-n)
-    | otherwise = iterate tapeRight t !! n
+tapeMoveToOffset :: Offset -> Tape -> Tape
+tapeMoveToOffset off t@(T p _ _ _)
+    | off < p   = iterate tapeLeft t !! (p - off)
+    | otherwise = iterate tapeRight t !! (off - p)
 
--- | Get the value of the current cell at the tape head.
-tapeRead :: Tape -> Cell
-tapeRead (T _ h _) = h
+-- | Get the value of the cell at offset.
+tapeRead :: Offset -> Tape -> Cell
+tapeRead off = tapeRead' . tapeMoveToOffset off
 
--- | Set the value of the current cell at the tape head.
-tapeWrite :: Cell -> Tape -> Tape
-tapeWrite x (T l _ r) = T l x r
+-- | Set the value of the cell at offset.
+tapeWrite :: Offset -> Cell -> Tape -> Tape
+tapeWrite off x = tapeWrite' x . tapeMoveToOffset off
 
 
 -- * Vector memory

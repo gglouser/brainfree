@@ -1,7 +1,6 @@
 module Main where
 
 import Control.Monad.State.Strict
-import Data.Monoid
 import System.Environment
 import System.IO
 
@@ -52,58 +51,26 @@ runFPtrMem = withFPtrMem defaultMemSize . evalStateT . runBFM step . eval
 -- | Run a bf program using an infinite 'Tape'.
 --
 -- To make it interesting, does not use auxiliary monads, but instead
--- endomorphisms of @'Tape' -> 'Offset' -> 'String' -> 'String'@.
+-- pure functions of @'Tape' -> 'String' -> 'String'@.
 -- The result is an 'interact'-style @'String' -> 'String'@ function
 -- that takes a 'String' for input and produces a 'String' as output.
 runTape :: [Instr] -> String -> String
-runTape prog = appEndo (toTapeAction $ eval prog) finish blankTape 0
+runTape prog = runBF step (eval prog >> return finish) blankTape
     where
-        toTapeAction :: BF () -> TapeAction
-        toTapeAction bf = runBF step (bf >> return mempty)
+        step :: BFF (Tape -> String -> String) -> Tape -> String -> String
+        step (MovePtr n k)      t i      = k (tapeMove n t) i
+        step (ReadPtr off k)    t i      = k (tapeRead off t) t i
+        step (WritePtr off c k) t i      = k (tapeWrite off c t) i
+        step (GetChar k)        t (c:cs) = k (Just c) t cs
+        step (GetChar k)        t []     = k Nothing  t []
+        step (PutChar c k)      t i      = c : k t i
+        step (Loop off body k)  t i      = loop' t i
+            where
+                loop' t' i' = if tapeRead off t' /= 0 then body' t' i' else k t' i'
+                body' = runBF step (body >> return loop')
 
-        step :: BFF (TapeAction) -> TapeAction
-        step (MovePtr n k)      = changeRefPos n <> k
-        step (ReadPtr off k)    = moveToOffset off <> tread k
-        step (WritePtr off c k) = moveToOffset off <> twrite c <> k
-        step (GetChar k)        = tgetc k
-        step (PutChar c k)      = tputc c <> k
-        step (Loop off body k)  = loop' <> k
-            where loop' = moveToOffset off <> whenNZ (toTapeAction body <> loop')
-
-        finish :: Tape -> Offset -> String -> String
-        finish _ _ _ = ""
-
-type TapeAction = Endo (Tape -> Offset -> String -> String)
-
--- | Change the tape reference position (no need to move the tape itself).
-changeRefPos :: Int -> TapeAction
-changeRefPos n = Endo $ \k t p i -> k t (p - n) i
-
--- | Move the tape to an offset relative to the current reference position.
-moveToOffset :: Offset -> TapeAction
-moveToOffset off = Endo $ \k t p i -> k (tapeMove (off - p) t) off i
-
-tread :: (Cell -> TapeAction) -> TapeAction
-tread f = Endo $ \k t p i -> appEndo (f (tapeRead t)) k t p i
-
-twrite :: Cell -> TapeAction
-twrite c = Endo $ \k t p i -> k (tapeWrite c t) p i
-
-tgetc :: (Maybe Char -> TapeAction) -> TapeAction
-tgetc f = Endo $ \k t p i ->
-    case i of
-        c : cs -> appEndo (f (Just c)) k t p cs
-        []     -> appEndo (f Nothing) k t p []
-
-tputc :: Char -> TapeAction
-tputc c = Endo $ \k t p i -> c : k t p i
-
--- | Execute the given tape action when the cell at tape head is non-zero.
-whenNZ :: TapeAction -> TapeAction
-whenNZ ta = Endo $ \k t p i ->
-    if tapeRead t /= 0
-        then appEndo ta k t p i
-        else k t p i
+        finish :: Tape -> String -> String
+        finish _ _ = ""
 
 -- | Use 'interact' to actually run the result of 'runTape' in 'IO'.
 --
