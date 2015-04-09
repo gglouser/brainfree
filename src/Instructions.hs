@@ -11,7 +11,9 @@ module Instructions (
   ) where
 
 import Control.Applicative
-import Data.Bifunctor
+import Control.Monad (guard, mzero)
+import Data.Bifunctor (first)
+import Data.Foldable (foldlM)
 import qualified Data.IntMap as Map
 import qualified Text.Parsec as P
 import Runtime (Cell, Offset)
@@ -61,7 +63,7 @@ skipChars = P.skipMany $ P.noneOf "<>-+,.[]"
 
 -- | Optimize a sequence of instructions.
 optimize :: [Instr] -> [Instr]
-optimize = optDeferMoves 0 0 . optSpecLoops
+optimize = optDeferMoves . optSpecLoops
 
 -- Check for special loop forms.
 -- Currently limited to multiplication loops (includes clear and copy loops).
@@ -70,7 +72,7 @@ optSpecLoops = concatMap optSpecLoop'
 
 optSpecLoop' :: Instr -> [Instr]
 optSpecLoop' (ILoop off body) =
-    case checkConstLoop 0 Map.empty body of
+    case checkConstLoop body of
         Just ms -> genMults off ms
         Nothing -> [ILoop off (optSpecLoops body)]
 optSpecLoop' i = [i]
@@ -78,32 +80,44 @@ optSpecLoop' i = [i]
 -- A /const loop/ is a loop that modifies a set of cells by a constant
 -- amount and has a net pointer movement of zero. Also, the cell at offset 0 must
 -- be modified by exactly 1 or -1.
-checkConstLoop :: Int -> Map.IntMap Cell -> [Instr] -> Maybe (Map.IntMap Cell)
-checkConstLoop p xs (IMovePtr n : k) = checkConstLoop (p+n) xs k
-checkConstLoop p xs (IAddPtr o c : k) = checkConstLoop p (Map.insertWith (+) (p+o) c xs) k
-checkConstLoop 0 xs [] =
-    case Map.lookup 0 xs of
-        Just 1 -> Just xs
-        Just (-1) -> Just xs
-        _ -> Nothing
-checkConstLoop _ _ _ = Nothing
+checkConstLoop :: [Instr] -> Maybe (Map.IntMap Cell)
+checkConstLoop prog = do
+    (p, xs) <- foldlM ccl (0, Map.empty) prog
+    guard $ p == 0
+    z <- Map.lookup 0 xs
+    case z of
+        -1 -> return xs
+        1  -> return $ Map.map negate xs
+        _  -> mzero
+    where
+        ccl (p, xs) (IMovePtr n)  = return (p + n, xs)
+        ccl (p, xs) (IAddPtr o c) = return (p, Map.insertWith (+) (p + o) c xs)
+        ccl _       _             = mzero
 
 genMults :: Offset -> Map.IntMap Cell -> [Instr]
 genMults off = Map.foldrWithKey mult [IWritePtr off 0]
     where
         mult 0 _ k = k
-        mult p v k = IMultPtr (p+off) 0 v : k
+        mult p v k = IMultPtr (p+off) off v : k
 
 -- Defer moves
-optDeferMoves :: Int -> Int -> [Instr] -> [Instr]
-optDeferMoves p b (IMovePtr n : k)  = optDeferMoves (p+n) b k
-optDeferMoves p b (IAddPtr o c : k) = IAddPtr (p+o) c : optDeferMoves p b k
-optDeferMoves p b (IInput o : k)    = IInput  (p+o)   : optDeferMoves p b k
-optDeferMoves p b (IOutput o : k)   = IOutput (p+o)   : optDeferMoves p b k
-optDeferMoves p b (ILoop o body : k) =
-    ILoop (p+o) (optDeferMoves p p body) : optDeferMoves p b k
-optDeferMoves p b (IWritePtr o c : k) = IWritePtr (p+o) c : optDeferMoves p b k
-optDeferMoves p b (IMultPtr o1 o2 c : k) = IMultPtr (p+o1) (p+o2) c : optDeferMoves p b k
-optDeferMoves p b [] = case p - b of
-                        0 -> []
-                        n -> [IMovePtr n]
+optDeferMoves :: [Instr] -> [Instr]
+optDeferMoves = defer False 0
+    where
+        defer inLoop p prog =
+            let (q, chunk) = foldl dfr (p, id) prog
+                end = if inLoop && p /= q
+                        then [IMovePtr (q - p)]
+                        else []
+            in chunk end
+
+        dfr (p, pre) (IMovePtr n)       = (p + n, pre)
+        dfr (p, pre) i                  = (p, pre . (addOffset p i :))
+        
+        addOffset p (IAddPtr o c)      = IAddPtr (p + o) c
+        addOffset p (IInput o)         = IInput (p + o)
+        addOffset p (IOutput o)        = IOutput (p + o)
+        addOffset p (ILoop o body)     = ILoop (p + o) (defer True p body)
+        addOffset p (IWritePtr o c)    = IWritePtr (p + o) c
+        addOffset p (IMultPtr o1 o2 c) = IMultPtr (p + o1) (p + o2) c
+        addOffset _ i_no_offset        = i_no_offset
