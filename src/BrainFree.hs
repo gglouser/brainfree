@@ -6,6 +6,7 @@ module BrainFree (
   -- * BF monad
   BF, BFF(..)
   , movePtr, readPtr, writePtr, getChr, putChr, loop
+  , modPtr
   , runBF, runBFM
   ) where
 
@@ -42,6 +43,9 @@ putChr c = liftF $ PutChar c ()
 
 loop :: MonadFree BFF m => Offset -> BF () -> m ()
 loop off body = liftF $ Loop off body ()
+
+modPtr :: MonadFree BFF m => Offset -> (Cell -> Cell) -> m ()
+modPtr off f = readPtr off >>= writePtr off . f
 
 -- | Tear down a 'BF' program using the given function to handle 'BFF' actions
 -- ('iter' specialized to 'BFF').
