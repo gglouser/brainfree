@@ -107,16 +107,16 @@ generateHS bf = putStr . unlines $
     , "main = hSetBuffering stdout NoBuffering >> run"
     , "mv n = modify $ fptrMove n"
     , "rd off = get >>= fptrRead off"
-    , "wr off x = get >>= fptrWrite off x"
-    , "md off f = get >>= \\p -> fptrRead off p >>= \\x -> fptrWrite off (f x) p"
-    , "mult o1 o2 c = rd o2 >>= \\y -> md o1 (+ y*c)"
+    , "wr off c = get >>= fptrWrite off c"
+    , "add off c = get >>= \\p -> fptrRead off p >>= \\x -> fptrWrite off (c + x) p"
+    , "mult o1 o2 c = rd o2 >>= add o1 . (* c)"
     , "run = withFPtrMem " ++ show defaultMemSize ++ ". evalStateT $ do"
     ] ++ genBlock bf
     where
         indent = ("  " ++)
         genBlock = map indent . concatMap step
         step (IMovePtr n)       = ["mv (" ++ show n ++ ")"]
-        step (IAddPtr off c)    = ["md (" ++ show off ++ ") (+ " ++ show c ++ ")"]
+        step (IAddPtr off c)    = ["add (" ++ show off ++ ") " ++ show c]
         step (IInput off)       = ["bfInputM getc (wr (" ++ show off ++ "))"]
         step (IOutput off)      = ["bfOutputM (rd (" ++ show off ++ ")) putc"]
         step (ILoop off body)   = ("bfLoopM (rd (" ++ show off ++ ")) $ do") : genBlock body
