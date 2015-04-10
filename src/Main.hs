@@ -16,12 +16,12 @@ eval :: [Instr] -> BF ()
 eval = mapM_ eval1
     where
         eval1 (IMovePtr n)      = movePtr n
-        eval1 (IAddPtr off c)   = modPtr off (+ c)
+        eval1 (IAddPtr off c)   = addCell off c
         eval1 (IInput off)      = bfInputM getChr (writePtr off)
         eval1 (IOutput off)     = bfOutputM (readPtr off) putChr
         eval1 (ILoop off body)  = loop off (eval body)
         eval1 (IWritePtr off c) = writePtr off c
-        eval1 (IMultPtr dstOff srcOff c) = readPtr srcOff >>= \y -> modPtr dstOff (+ y*c)
+        eval1 (IMultPtr dstOff srcOff c) = multCell dstOff srcOff c
 
 -- | Run a bf program in 'IO' using a 'VectorMem' data store.
 runVecMem :: [Instr] -> IO ()

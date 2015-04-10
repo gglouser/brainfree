@@ -6,8 +6,9 @@ module BrainFree (
   -- * BF monad
   BF, BFF(..)
   , movePtr, readPtr, writePtr, getChr, putChr, loop
-  , modPtr
   , runBF, runBFM
+  -- * Utilities
+  , modCell, addCell, multCell
   ) where
 
 import Control.Monad.Free.Church
@@ -44,9 +45,6 @@ putChr c = liftF $ PutChar c ()
 loop :: MonadFree BFF m => Offset -> BF () -> m ()
 loop off body = liftF $ Loop off body ()
 
-modPtr :: MonadFree BFF m => Offset -> (Cell -> Cell) -> m ()
-modPtr off f = readPtr off >>= writePtr off . f
-
 -- | Tear down a 'BF' program using the given function to handle 'BFF' actions
 -- ('iter' specialized to 'BFF').
 runBF :: (BFF a -> a) -> BF a -> a
@@ -56,3 +54,13 @@ runBF f p = runF p id f
 -- 'BFF' actions ('iterM' specialized to 'BFF').
 runBFM :: Monad m => (BFF (m a) -> m a) -> BF a -> m a
 runBFM = iterM
+
+
+modCell :: MonadFree BFF m => Offset -> (Cell -> Cell) -> m ()
+modCell off f = readPtr off >>= writePtr off . f
+
+addCell :: MonadFree BFF m => Offset -> Cell -> m ()
+addCell off c = modCell off (+ c)
+
+multCell :: MonadFree BFF m => Offset -> Offset -> Cell -> m ()
+multCell dstOff srcOff c = readPtr srcOff >>= addCell dstOff . (* c)

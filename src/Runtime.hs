@@ -6,6 +6,7 @@ module Runtime where
 
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
+import Data.Char (isAscii, showLitChar)
 import qualified Data.Vector.Unboxed.Mutable as V
 import Data.Word (Word8)
 import Foreign.Ptr (Ptr)
@@ -49,7 +50,7 @@ getc = do eof <- liftIO isEOF
 
 -- | Send a character to stdout.
 putc :: MonadIO m => Char -> m ()
-putc = liftIO . putChar
+putc c = liftIO $ if isAscii c then putChar c else putStr $ showLitChar c ""
 
 
 -- * Infinite tape memory
