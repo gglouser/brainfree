@@ -6,20 +6,16 @@ language well-known for its simplicity. That simplicity makes it difficult to
 write programs in brainfuck, but also makes it easy to write interpreters and
 compilers for the language.
 
-BrainFree is a brainfuck interpreter in Haskell that uses a free monad as an
-intermediate form to represent the brainfuck program. In a sense, it's not all that
-different from using an algebraic data type to represent the program instructions,
-but here, the free monad acts as our AST. Once the program is in free monad
-form, we can evaluate it in different ways corresponding to different concrete
-implementations of the abstract brainfuck machine. Three "back ends" are provided,
-selectable with command line option:
+BrainFree is a brainfuck interpreter in Haskell that uses a free monad named
+BF as an intermediate layer. The BF monad specifies the capabilities of an abstract 
+brainfuck machine. Once the program is in this form, we can evaluate it in 
+different ways corresponding to different concrete implementations of the abstract 
+brainfuck machine. Three "back ends" are provided, selectable with command line 
+option:
 
 - `-v` -- a mutable unboxed Vector (default)
 - `-f` -- a Foreign pointer into an array
 - `-t` -- an infinite stream-based tape
-
-We can also perform some limited optimizations on the program in free monad form
-(enabled with `-o`).
 
 ### Usage summary ###
 
@@ -30,6 +26,8 @@ We can also perform some limited optimizations on the program in free monad form
     -v      use Vector data store (default)
     -f      use Foreign array data store
     -t      use infinite tape data store
+    -c      generate C code
+    -h      generate Haskell code
 
 ### Performance ###
 
@@ -41,10 +39,9 @@ Sample runtimes (completely unscientific) of long.bf:
 
 | Data store   | No optimization | With optimization |
 |--------------|-----------------|-------------------|
-| Vector (-v)  |         103.65s |            29.36s |
-| Foreign (-f) |          89.05s |            23.60s |
-| tape (-t)    |         290.47s |           149.40s |
-
+| Vector (-v)  |         104.68s |            16.91s |
+| Foreign (-f) |          87.89s |            14.48s |
+| Tape (-t)    |         497.72s |           141.26s |
 
 The BF Monad
 -------------
@@ -79,7 +76,12 @@ how each basic command can be implemented:
 | '.'     | `readPtr >>= putChar . cellToChar`   |
 | ','     | `getChar >>= writePtr . charToCell`  |
 
-Loops can be implemented using the full power of recursion and monads.
+In the actual implementation, we represent the program using a regular
+algebraic data type first because that form lends itself much better
+to static optimization. The program in BF monad form has code
+hidden behind lambdas.
+
+Loops *could* be implemented using the full power of recursion and monads.
 Assume that a loop body (everything between a balanced pair of `[...]`)
 has already been translated into our monad `Free BFF ()`. Then the loop is:
 

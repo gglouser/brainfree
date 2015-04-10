@@ -137,7 +137,7 @@ processArgs runner o (filename:_) =
 processArgs _ _ _ = usage
 
 usage :: IO ()
-usage = putStrLn "usage: brainfree [-v|-f|-t] [-o] FILENAME"
+usage = putStrLn "usage: brainfree [-v|-f|-t|-c|-h] [-o] FILENAME"
 
 main :: IO ()
 main = do

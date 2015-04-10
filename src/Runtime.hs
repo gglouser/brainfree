@@ -60,7 +60,7 @@ data Stream = Cell :> Stream
 
 -- | A bidirectionally infinite tape with one 'Cell' that can be read
 -- from or written to by a notional /tape head/ that can be moved left
--- or right along the tape. Also track the current position relative
+-- or right along the tape. Also tracks the current position relative
 -- to the /data pointer/.
 data Tape = T !Offset Stream !Cell Stream
 
@@ -85,12 +85,13 @@ tapeRead' (T _ _ h _) = h
 tapeWrite' :: Cell -> Tape -> Tape
 tapeWrite' x (T p l _ r) = T p l x r
 
--- | Move pointer. No need to actually move the tape, just update relative position.
+-- | Move the data pointer.
+-- No need to actually move the tape, just update relative position.
 tapeMove :: Offset -> Tape -> Tape
 tapeMove n (T p l h r) = T (p - n) l h r
 
--- | Move tape to give offset relative to pointer.
--- Positive argument moves to the right, negative moves to the left.
+-- | Move tape to offset relative to pointer.
+-- Positive offsets are to the right, negative to the left.
 tapeMoveToOffset :: Offset -> Tape -> Tape
 tapeMoveToOffset off t@(T p _ _ _)
     | off < p   = iterate tapeLeft t !! (p - off)
@@ -118,15 +119,15 @@ withVectorMem :: Int -> (VectorMem -> IO a) -> IO a
 withVectorMem size f = do v <- V.replicate size 0
                           f (VM v 0)
 
--- | Move the current cell pointer by the specified amount.
+-- | Move the data pointer.
 vecMove :: Int -> VectorMem -> VectorMem
 vecMove n (VM v p) = VM v (p + n)
 
--- | Get the value of the current cell.
+-- | Get the value of cell at offset.
 vecRead :: MonadIO m => Offset -> VectorMem -> m Cell
 vecRead off (VM v p) = liftIO $ V.unsafeRead v (p + off)
 
--- | Set the value of the current cell.
+-- | Set the value of the cell at offset.
 vecWrite :: MonadIO m => Offset -> Cell -> VectorMem -> m ()
 vecWrite off x (VM v p) = liftIO $ V.unsafeWrite v (p + off) x
 
@@ -141,14 +142,14 @@ type FPtrMem = Ptr Cell
 withFPtrMem :: Int -> (FPtrMem -> IO a) -> IO a
 withFPtrMem size = withArray (replicate size 0)
 
--- | Move the current cell pointer by the specified amount.
+-- | Move the data pointer.
 fptrMove :: Int -> FPtrMem -> FPtrMem
 fptrMove = flip advancePtr
 
--- | Get the value of the current cell.
+-- | Get the value of the cell at offset.
 fptrRead :: MonadIO m => Offset -> FPtrMem -> m Cell
 fptrRead off ptr = liftIO $ peekElemOff ptr off
 
--- | Set the value of the current cell.
+-- | Set the value of the cell at offset.
 fptrWrite :: MonadIO m => Offset -> Cell -> FPtrMem -> m ()
 fptrWrite off x ptr = liftIO $ pokeElemOff ptr off x
